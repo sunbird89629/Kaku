@@ -2997,6 +2997,68 @@ for (const cancel of [false, true]) test('real desktop touch ' + (cancel ? 'canc
   assert.deepEqual(errors, []);
 });
 
+test('touch keyboard pans the page without resizing the remote grid', async t => {
+  const { p } = await page(t, '#t=fixture', { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  await screen(p);
+  await p.waitForTimeout(250);
+  const before = await p.evaluate(() => {
+    const stage = document.querySelector('#stage');
+    const height = visualViewport.height;
+    Object.defineProperty(visualViewport, 'height', { configurable: true, get: () => window.testViewportHeight });
+    window.testViewportHeight = height;
+    messages.length = 0;
+    return { height, stage: stage.clientHeight, rows: probe.term.rows, cols: probe.term.cols };
+  });
+  for (let i = 0; i < 5; i++) {
+    await p.locator('#stage').tap({ position: { x: 100, y: 100 } });
+    await p.evaluate(height => {
+      probe.term.focus();
+      window.testViewportHeight = height - 300;
+      visualViewport.dispatchEvent(new Event('resize'));
+    }, before.height);
+    await p.waitForTimeout(150);
+    const open = await p.evaluate(() => ({
+      stage: document.querySelector('#stage').clientHeight,
+      rows: probe.term.rows, cols: probe.term.cols,
+      shift: new DOMMatrix(getComputedStyle(document.body).transform).m42,
+      keys: document.querySelector('#keys').getBoundingClientRect().bottom,
+      claims: messages.filter(m => m.type === 'resize').length,
+    }));
+    assert.equal(open.stage, before.stage);
+    assert.equal(open.rows, before.rows);
+    assert.equal(open.cols, before.cols);
+    assert.equal(open.shift, -300);
+    assert.ok(open.keys <= before.height - 300 + 1);
+    assert.equal(open.claims, 0);
+    await p.evaluate(height => {
+      document.activeElement.blur();
+      visualViewport.dispatchEvent(new Event('scroll'));
+      window.testViewportHeight = height;
+      visualViewport.dispatchEvent(new Event('resize'));
+    }, before.height);
+    await p.waitForTimeout(150);
+    assert.equal(await p.evaluate(() => messages.filter(m => m.type === 'resize').length), 0);
+    assert.equal(await p.evaluate(() => getComputedStyle(document.body).transform), 'none');
+  }
+  await p.evaluate(() => { delete visualViewport.height; });
+  await p.setViewportSize({ width: 844, height: 390 });
+  await p.waitForFunction(() => messages.some(m => m.type === 'resize'));
+  await p.waitForTimeout(200);
+  const landscape = await p.evaluate(() => {
+    const height = visualViewport.height;
+    const stage = document.querySelector('#stage').clientHeight;
+    Object.defineProperty(visualViewport, 'height', { configurable: true, get: () => window.testViewportHeight });
+    window.testViewportHeight = height - 150;
+    messages.length = 0;
+    probe.term.focus();
+    visualViewport.dispatchEvent(new Event('resize'));
+    return stage;
+  });
+  await p.waitForTimeout(150);
+  assert.equal(await p.evaluate(() => document.querySelector('#stage').clientHeight), landscape);
+  assert.equal(await p.evaluate(() => messages.filter(m => m.type === 'resize').length), 0);
+});
+
 test('on a touch screen switching tabs leaves the keyboard down, a tap on the terminal raises it', async t => {
   const { p } = await page(t, '#t=fixture', { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   if (!(await p.evaluate(() => document.body.classList.contains('touch')))) {

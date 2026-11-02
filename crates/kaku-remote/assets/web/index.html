@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-visual">
 <meta name="referrer" content="no-referrer">
 <!-- The relay this page talks to when it is served from its own origin
      (t.kaku.fun, filled in by scripts/publish_web_page.sh). Empty, the page
@@ -204,6 +204,8 @@
     body.touch #keys { padding: 4px 8px; }
     body.touch #keys button { height: 30px; }
     body.touch:not(.kb) #keys { display: none; }
+    body.touch.kb #keys { position: absolute; bottom: 0; left: 0; right: 0; }
+    body.touch.kb #stage { transform: translateY(-39px); }
   }
   /* Dragging scrolls the terminal, so the browser must not take the gesture.
      Touches also land on the stable screen element rather than a row: xterm
@@ -998,16 +1000,16 @@
   setInterval(densityChanged, 2000);
   // Coming back to the page means using it here: claim the tab's size again,
   // in case the Mac took it back meanwhile.
-  const reclaim = () => { if (desktop?.active) return; macSized = false; claimed = ""; fit(); };
+  const reclaim = (force = false) => { if (desktop?.active) return; if (force || macSized) claimed = ""; macSized = false; fit(); };
   // Typing here after the Mac took the tab back (its own keys or clicks,
   // the desktop view's among them) claims it again, as a click or coming
   // back to the page does; otherwise the grid stayed the Mac window's size
   // until the next click.
   const takeBack = () => { if (macSized) reclaim(); };
-  window.addEventListener("focus", reclaim);
+  window.addEventListener("focus", () => reclaim(true));
   // A press anywhere on the page means this side is in use, as a click in
   // the Mac window is for the Mac.
-  document.addEventListener("pointerdown", reclaim, true);
+  document.addEventListener("pointerdown", () => reclaim(), true);
 
   // Keys that are not plain text go to Kaku, which encodes them for the
   // pane's current modes. Plain characters and IME text arrive via onData.
@@ -1206,22 +1208,40 @@
     const keysEdge = () => keysEl.classList.toggle("more-right", keysEl.scrollLeft + keysEl.clientWidth < keysEl.scrollWidth - 2);
     keysEl.addEventListener("scroll", keysEdge, { passive: true });
     new ResizeObserver(keysEdge).observe(keysEl);
-    // When the keyboard opens, iOS shrinks only the visual viewport: size the
-    // page to it so the prompt and the key row stay above the keyboard.
+    // Keep the terminal grid at its keyboard-down size. Pan the whole page
+    // above the keyboard instead of resizing the stage and the remote PTY.
     if (window.visualViewport) {
       const vv = window.visualViewport;
-      // The keyboard is up when the visible height drops well below the
-      // tallest seen in this orientation.
-      const tallest = {};
+      let width = vv.width;
+      let height = vv.height;
+      let keyboard = false;
+      // Some Android keyboards change the safe-area inset as they open.
+      // Freeze it with the layout so that change cannot resize the stage.
+      const saveInset = () => {
+        document.body.style.paddingBottom = "";
+        document.body.style.paddingBottom = getComputedStyle(document.body).paddingBottom;
+      };
+      saveInset();
       const sync = () => {
-        document.body.style.height = vv.height + "px";
+        // A width change (including rotation) starts a new layout. Pinch zoom
+        // is not a keyboard and should not change the saved layout height.
+        if (vv.scale === 1 && Math.abs(vv.width - width) > 1) {
+          width = vv.width;
+          height = vv.height;
+          keyboard = false;
+          saveInset();
+        }
+        const focused = document.activeElement?.matches("input, textarea, [contenteditable=true]");
+        if (vv.scale === 1 && ((!focused && !keyboard) || vv.height > height)) height = vv.height;
+        keyboard = vv.scale === 1 && (keyboard ? vv.height < height - 1 : focused && vv.height < height - 40);
+        document.body.style.height = height + "px";
+        document.body.style.transform = keyboard ? `translateY(${vv.offsetTop + vv.height - height}px)` : "";
+        document.body.classList.toggle("kb", keyboard);
         window.scrollTo(0, 0);
-        const side = screen.orientation ? screen.orientation.type.split("-")[0] : String(innerWidth > innerHeight);
-        tallest[side] = Math.max(tallest[side] || 0, vv.height);
-        document.body.classList.toggle("kb", vv.height < tallest[side] * 0.8);
       };
       vv.addEventListener("resize", sync);
       vv.addEventListener("scroll", sync);
+      window.addEventListener("focusout", () => setTimeout(sync, 0));
       sync();
     }
   }
@@ -3664,7 +3684,7 @@
   // instead of waiting out the heartbeat.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible" || linkRejected) return;
-    reclaim();
+    reclaim(true);
     verifySoon();
     if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
       retry = 0;
